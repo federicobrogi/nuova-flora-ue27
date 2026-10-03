@@ -41,11 +41,37 @@ def json_records(csv_path: Path) -> str:
     return frame.to_json(orient="records", force_ascii=False)
 
 
+def compact_series(source_root: Path, target_root: Path) -> None:
+    """Write lossless column-oriented JSON to stay within Sites asset limits."""
+    for source in source_root.rglob("*.json"):
+        relative = source.relative_to(source_root)
+        target = target_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        records = json.loads(source.read_text(encoding="utf-8"))
+        if not records:
+            payload = {"c": [], "d": []}
+        else:
+            columns = list(records[0])
+            payload = {
+                "c": columns,
+                "d": [[record.get(column) for column in columns] for record in records],
+            }
+        target.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+
 def externalize_data(page: str) -> str:
     start = page.index("const rows=")
     types_start = page.index("types=['cambio livello'", start)
     page = page[:start] + "let rows=[],hormuzRows=[];const " + page[types_start:]
     page = page.replace(";let filtered=rows.slice(),activeType=", ";let filtered=[],activeType=", 1)
+    page = page.replace(
+        "function url(r){return`data/series/${encodeURIComponent(r.country)}/${r.flow}/${encodeURIComponent(r.partner)}.json`}async function seriesFor(r){const u=url(r);if(!cache.has(u))cache.set(u,fetch(u).then(x=>{if(!x.ok)throw Error('Serie non disponibile');return x.json()}));return(await cache.get(u)).filter(x=>String(x.product)===String(r.product)).sort((a,b)=>String(a.period).localeCompare(String(b.period)))}",
+        "function unpackSeries(payload){if(Array.isArray(payload))return payload;const c=payload?.c,d=payload?.d;if(!Array.isArray(c)||!Array.isArray(d))throw Error('Formato serie non valido');return d.map(values=>Object.fromEntries(c.map((name,i)=>[name,values[i]])))}function url(r){return`data/series/${encodeURIComponent(r.country)}/${r.flow}/${encodeURIComponent(r.partner)}.json`}async function seriesFor(r){const u=url(r);if(!cache.has(u))cache.set(u,fetch(u).then(async x=>{if(!x.ok)throw Error('Serie non disponibile');return unpackSeries(await x.json())}));return(await cache.get(u)).filter(x=>String(x.product)===String(r.product)).sort((a,b)=>String(a.period).localeCompare(String(b.period)))}",
+        1,
+    )
 
     options_start = page.index("function opts(")
     options_end = page.index("function selected()", options_start)
@@ -110,8 +136,7 @@ def build() -> dict:
 
     source_series = SOURCE_DASHBOARD / "data" / "series"
     target_series = data_dir / "series"
-    if not target_series.exists():
-        shutil.copytree(source_series, target_series)
+    compact_series(source_series, target_series)
     shutil.copy2(SOURCE_DASHBOARD / "analisi_hormuz_nuova_flora.docx", DIST)
 
     file_count = sum(1 for path in DIST.rglob("*") if path.is_file())
